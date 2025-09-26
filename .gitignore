@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.Python
+.python-version
+
+# --- Virtual environment ---
+.venv/
+env/
+venv/
+
+# --- Streamlit cache & logs ---
+.streamlit/
+logs/
+cache/
+
+# --- DuckDB database & temp files ---
+streamlit/db/*.duckdb
+streamlit/db/*.wal
+
+# --- Local data cache (parquet exports) ---
+_cache/
+!_cache/.keep        # optional placeholder so folder stays in repo
+
+# --- OS-specific ---
+.DS_Store
+Thumbs.db
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Jupyter checkpoints (if you had any notebooks) ---
+.ipynb_checkpoints/
