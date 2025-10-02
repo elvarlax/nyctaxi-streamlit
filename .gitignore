@@ -13,8 +13,10 @@ venv/
 
 # --- Data & DB ---
 data/
-# nyctaxi.duckdb*
-# this covers .wal, .tmp, .lock etc
+# Ignore DuckDB temp/journal files, but keep the main .duckdb
+nyctaxi.duckdb.wal
+nyctaxi.duckdb.tmp
+nyctaxi.duckdb.lock
 
 # --- OS / IDE files ---
 .DS_Store

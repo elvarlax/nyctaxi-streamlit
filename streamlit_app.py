@@ -29,18 +29,35 @@ if not DB_PATH.exists():
     st.error(f"Missing DuckDB file: {DB_PATH.name}. Build it first (python build_duckdb.py).")
     st.stop()
 
-con = duckdb.connect(str(DB_PATH), read_only=True)
+# Cached connection & query helpers
+@st.cache_resource(show_spinner=False)
+def get_con(db_path: str):
+    return duckdb.connect(db_path, read_only=True)
 
-# Load views into DataFrames (pre-aggregates only)
-zones         = con.sql("SELECT * FROM v_dim_taxi_zone").df()
-pu_zone_daily = con.sql("SELECT * FROM v_pu_zone_daily").df()                 # 02
-daily_metrics = con.sql("SELECT * FROM v_daily_service_metrics").df()         # 03 & 05 & 09
-zone_pairs    = con.sql("SELECT * FROM v_zone_pair_flow").df()                # 07
-payment_mix   = con.sql("SELECT * FROM v_payment_mix").df()                   # 08
-tip_hotspots  = con.sql("SELECT * FROM v_tip_hotspots").df()                  # 06
-airport_daily = con.sql("SELECT * FROM v_airport_traffic_daily").df()         # 10
-efficiency    = con.sql("SELECT * FROM v_service_efficiency").df()            # 04
-rush_hour     = con.sql("SELECT * FROM v_rush_hour_pickups").df()             # 03-hourly
+@st.cache_data(show_spinner=False, ttl=600)
+def load_view(sql: str):
+    con = get_con(str(DB_PATH))
+    # Arrow -> pandas is fast and stable
+    return con.execute(sql).arrow().to_pandas()
+
+with st.sidebar:
+    if st.button("🔁 Clear caches"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.success("Caches cleared. Rerun triggered.")
+
+con = get_con(str(DB_PATH))
+
+# Load views into DataFrames (pre-aggregates only, cached)
+zones         = load_view("SELECT * FROM v_dim_taxi_zone")
+pu_zone_daily = load_view("SELECT * FROM v_pu_zone_daily")                 # 02
+daily_metrics = load_view("SELECT * FROM v_daily_service_metrics")         # 03 & 05 & 09
+zone_pairs    = load_view("SELECT * FROM v_zone_pair_flow")                # 07
+payment_mix   = load_view("SELECT * FROM v_payment_mix")                   # 08
+tip_hotspots  = load_view("SELECT * FROM v_tip_hotspots")                  # 06
+airport_daily = load_view("SELECT * FROM v_airport_traffic_daily")         # 10
+efficiency    = load_view("SELECT * FROM v_service_efficiency")            # 04
+rush_hour     = load_view("SELECT * FROM v_rush_hour_pickups")             # 03-hourly
 
 # ----------------- Chart helpers -----------------
 def pretty_line(df, x, y, color, y_title, y_fmt=None):
@@ -63,7 +80,6 @@ def pretty_line(df, x, y, color, y_title, y_fmt=None):
             ],
         )
         .properties(height=ALT_LINE_HEIGHT)
-        .interactive()
     )
 
 def pretty_bar(df, x, y, sort='-x', x_title=None, color=None, color_scale=None, legend_title=None):
@@ -449,36 +465,62 @@ with tabs[6]:
     else:
         st.info("No borough flow data available.")
 
-# 8) Payment mix — payment_mix (05) — wide layout
+# 8) Payment mix — payment_mix (05)
 with tabs[7]:
     st.markdown("**Question:** How does the payment mix change over time?")
     df = filter_by_date_service(
         payment_mix, start_date, end_date,
-        [s for s in service_types if s in {"yellow","green","fhvhv"}]
+        [s for s in service_types if s in {"yellow", "green", "fhvhv"}]
     )
-    need = {"pickup_date","service_type","payment_type","share"}
+    need = {"pickup_date", "service_type", "payment_type", "share"}
     if not df.empty and need.issubset(df.columns):
         dfx = df.copy()
-        dfx["pickup_date"] = pd.to_datetime(dfx["pickup_date"], errors="coerce")
 
-        chart = (
-            alt.Chart(dfx)
-            .mark_area()
-            .encode(
-                x=alt.X("pickup_date:T", title=None),
-                y=alt.Y("share:Q", stack="normalize", title="Share", axis=alt.Axis(format=".0%")),
-                color=alt.Color("payment_type:N", title="Payment"),
-                facet=alt.Facet("service_type:N", columns=1, title=None),
-                tooltip=[
-                    alt.Tooltip("pickup_date:T", title="Date"),
-                    alt.Tooltip("service_type:N", title="Service"),
-                    alt.Tooltip("payment_type:N", title="Payment"),
-                    alt.Tooltip("share:Q", title="Share", format=".1%"),
-                ],
-            )
-            .properties(height=120, width=1200)
+        # --- Clean columns ---
+        dfx["pickup_date"] = pd.to_datetime(dfx["pickup_date"], errors="coerce")
+        dfx = dfx[dfx["pickup_date"].notna()]
+
+        # Normalize payment labels a bit so colors are stable
+        norm_map = {
+            "credit card": "Credit card", "credit": "Credit card", "card": "Credit card",
+            "cash": "Cash", "no charge": "No charge", "dispute": "Dispute",
+            "unknown": "Unknown", "other": "Unknown",
+        }
+        dfx["payment_type"] = (
+            dfx["payment_type"]
+            .astype(str).str.strip().str.lower().map(norm_map)
+            .fillna(dfx["payment_type"].astype(str).str.strip())
         )
-        st.altair_chart(chart, use_container_width=False)
+
+        # Ensure share is numeric and in 0–1
+        dfx["share"] = pd.to_numeric(dfx["share"], errors="coerce")
+        if dfx["share"].max(skipna=True) and dfx["share"].max() > 1.5:
+            dfx["share"] = dfx["share"] / 100.0  # convert 0–100 to 0–1
+
+        dfx = dfx[dfx["share"].notna() & (dfx["share"] >= 0)]
+
+        if dfx.empty:
+            st.info("No payment mix data after filtering/cleaning.")
+        else:
+            base = (
+                alt.Chart(dfx)
+                .mark_area()
+                .encode(
+                    x=alt.X("pickup_date:T", title=None),
+                    y=alt.Y("share:Q", stack="normalize", title="Share", axis=alt.Axis(format=".0%")),
+                    color=alt.Color("payment_type:N", title="Payment"),
+                    tooltip=[
+                        alt.Tooltip("pickup_date:T", title="Date"),
+                        alt.Tooltip("service_type:N", title="Service"),
+                        alt.Tooltip("payment_type:N", title="Payment"),
+                        alt.Tooltip("share:Q", title="Share", format=".1%"),
+                    ],
+                )
+                .properties(height=120, width=1200)
+            )
+
+            chart = base.facet(row=alt.Row("service_type:N", title=None))
+            st.altair_chart(chart, use_container_width=True)
     else:
         st.info("No payment mix data available.")
 

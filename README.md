@@ -11,7 +11,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Windows (Git Bash)
-source .venv/bin/activate
+python -m venv .venv
+source .venv/Scripts/activate
 
 # Windows (PowerShell)
 python -m venv .venv
